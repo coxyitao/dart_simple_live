@@ -1,0 +1,64 @@
+name: Build iOS (Unsigned IPA)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+
+jobs:
+  build-ios:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter 3.22
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.x'
+          cache: true
+
+      - name: Install CocoaPods
+        run: |
+          sudo gem install cocoapods
+          pod repo update
+
+      - name: Get packages
+        working-directory: simple_live_app
+        run: flutter pub get
+
+      # 方式1：尝试直接打未签名IPA（Flutter 支持 --no-codesign）
+      - name: Build unsigned IPA (try)
+        working-directory: simple_live_app
+        run: |
+          set -e
+          flutter build ipa --release --no-codesign || true
+
+      # 方式2：兜底：先编出 Runner.app，再用 Payload 打包成未签名IPA
+      - name: Build .app (no codesign)
+        if: ${{ always() }}
+        working-directory: simple_live_app
+        run: |
+          flutter build ios --release --no-codesign || true
+          # Xcode 偶尔仍需显式禁用签名，改用 xcodebuild 更稳：
+          xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -configuration Release -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" || true
+
+      - name: Make unsigned IPA from Payload
+        working-directory: simple_live_app
+        run: |
+          set -e
+          APP_PATH="build/ios/Build/Products/Release-iphoneos/Runner.app"
+          if [ -d "$APP_PATH" ]; then
+            mkdir -p Payload
+            cp -R "$APP_PATH" Payload/
+            zip -r SimpleLive_unsigned.ipa Payload
+            rm -rf Payload
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa
+          path: |
+            simple_live_app/build/ios/ipa/*.ipa
+            simple_live_app/SimpleLive_unsigned.ipa
